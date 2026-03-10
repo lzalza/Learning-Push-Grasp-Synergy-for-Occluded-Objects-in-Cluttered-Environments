@@ -56,7 +56,10 @@ python main_new.py --stage push_grasp --num_obj 20 --experience_replay --explore
 **2. Evaluate Results**
 
 After the tests have finished running, evaluate the logs of the test using:
+
+```bash
 python evaluate.py --output "$logs"
+```
 
 ## Acknowledgment
 
