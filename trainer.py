@@ -424,7 +424,7 @@ class Trainer(object):
                     if self.alternating_training:
                         current_reward = -1.0
                         if(change_detected and decreased_occupy_ratio > 0.1):
-                            current_reward = -1.0
+                            current_reward = 0
 
             # Compute future reward
             if improved_grasp_reward <= 0.1 and grasp_reward < 0.5 and not grasp_success:

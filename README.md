@@ -46,11 +46,10 @@ To evaluate the trained models, follow these steps:
 
 **1. Run Testing**
 
-Execute the testing script to run the models in the simulation environment:
+Execute the testing script to evaluate the models in ten severely occluded simulation scenarios
 
 ```bash
-python main_new.py --stage push_grasp --num_obj 20 --experience_replay --explore_rate_decay --is_testing --test_preset_cases --test_preset_file 'simulation/my_test/obj_20_1.txt' \
-                                --load_snapshot --snapshot_file "$X5" > "$logs"
+sh run_test.sh
 ```
 
 **2. Evaluate Results**

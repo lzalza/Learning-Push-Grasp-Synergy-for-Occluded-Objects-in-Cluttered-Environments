@@ -1,11 +1,12 @@
 import struct
 import math
-from typing import List, Tuple, Optional
 import numpy as np
 import cv2
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from scipy.ndimage import binary_dilation
+from torch.autograd import Variable
+from scipy.ndimage.morphology import binary_dilation
 
 
 def get_pointcloud(color_img, depth_img, camera_intrinsics):
@@ -78,46 +79,47 @@ def get_heightmap(color_img, depth_img, cam_intrinsics, cam_pose, workspace_limi
     return color_heightmap, depth_heightmap
 
 # Save a 3D point cloud to a binary .ply file
-def pcwrite(xyz_pts: np.ndarray, filename: str, rgb_pts: Optional[np.ndarray]=None) -> None:
+def pcwrite(xyz_pts, filename, rgb_pts=None):
     assert xyz_pts.shape[1] == 3, 'input XYZ points should be an Nx3 matrix'
     if rgb_pts is None:
-        rgb_pts = (np.ones(xyz_pts.shape, dtype=np.uint8) * 255)
+        rgb_pts = np.ones(xyz_pts.shape).astype(np.uint8)*255
     assert xyz_pts.shape == rgb_pts.shape, 'input RGB colors should be Nx3 matrix and same size as input XYZ points'
 
-    with open(filename, 'wb') as pc_file:
-        pc_file.write(bytearray('ply\n', 'utf8'))
-        pc_file.write(bytearray('format binary_little_endian 1.0\n', 'utf8'))
-        pc_file.write(bytearray(('element vertex %d\n' % xyz_pts.shape[0]), 'utf8'))
-        pc_file.write(bytearray('property float x\n', 'utf8'))
-        pc_file.write(bytearray('property float y\n', 'utf8'))
-        pc_file.write(bytearray('property float z\n', 'utf8'))
-        pc_file.write(bytearray('property uchar red\n', 'utf8'))
-        pc_file.write(bytearray('property uchar green\n', 'utf8'))
-        pc_file.write(bytearray('property uchar blue\n', 'utf8'))
-        pc_file.write(bytearray('end_header\n', 'utf8'))
+    # Write header for .ply file
+    pc_file = open(filename, 'wb')
+    pc_file.write(bytearray('ply\n', 'utf8'))
+    pc_file.write(bytearray('format binary_little_endian 1.0\n', 'utf8'))
+    pc_file.write(bytearray(('element vertex %d\n' % xyz_pts.shape[0]), 'utf8'))
+    pc_file.write(bytearray('property float x\n', 'utf8'))
+    pc_file.write(bytearray('property float y\n', 'utf8'))
+    pc_file.write(bytearray('property float z\n', 'utf8'))
+    pc_file.write(bytearray('property uchar red\n', 'utf8'))
+    pc_file.write(bytearray('property uchar green\n', 'utf8'))
+    pc_file.write(bytearray('property uchar blue\n', 'utf8'))
+    pc_file.write(bytearray('end_header\n', 'utf8'))
 
-        for i in range(xyz_pts.shape[0]):
-            x, y, z = float(xyz_pts[i][0]), float(xyz_pts[i][1]), float(xyz_pts[i][2])
-            r, g, b = int(rgb_pts[i][0]), int(rgb_pts[i][1]), int(rgb_pts[i][2])
-            pc_file.write(struct.pack('fffBBB', x, y, z, r, g, b))
+    # Write 3D points to .ply file
+    for i in range(xyz_pts.shape[0]):
+        pc_file.write(bytearray(struct.pack("fffccc",xyz_pts[i][0],xyz_pts[i][1],xyz_pts[i][2],rgb_pts[i][0].tostring(),rgb_pts[i][1].tostring(),rgb_pts[i][2].tostring())))
+    pc_file.close()
 
 
-def get_affordance_vis(grasp_affordances: np.ndarray, input_images: np.ndarray, num_rotations: int, best_pix_ind) -> np.ndarray:
+def get_affordance_vis(grasp_affordances, input_images, num_rotations, best_pix_ind):
     vis = None
-    rows = int(num_rotations // 4)
-    for vis_row in range(rows):
+    for vis_row in range(num_rotations/4):
         tmp_row_vis = None
         for vis_col in range(4):
             rotate_idx = vis_row*4+vis_col
             affordance_vis = grasp_affordances[rotate_idx,:,:]
-            affordance_vis[affordance_vis < 0] = 0
-            affordance_vis[affordance_vis > 1] = 1
+            affordance_vis[affordance_vis < 0] = 0 # assume probability
+            # affordance_vis = np.divide(affordance_vis, np.max(affordance_vis))
+            affordance_vis[affordance_vis > 1] = 1 # assume probability
             affordance_vis.shape = (grasp_affordances.shape[1], grasp_affordances.shape[2])
             affordance_vis = cv2.applyColorMap((affordance_vis*255).astype(np.uint8), cv2.COLORMAP_JET)
             input_image_vis = (input_images[rotate_idx,:,:,:]*255).astype(np.uint8)
             input_image_vis = cv2.resize(input_image_vis, (0,0), fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST)
             affordance_vis = (0.5*cv2.cvtColor(input_image_vis, cv2.COLOR_RGB2BGR) + 0.5*affordance_vis).astype(np.uint8)
-            if rotate_idx == int(best_pix_ind[0]):
+            if rotate_idx == best_pix_ind[0]:
                 affordance_vis = cv2.circle(affordance_vis, (int(best_pix_ind[2]), int(best_pix_ind[1])), 7, (0,0,255), 2)
             if tmp_row_vis is None:
                 tmp_row_vis = affordance_vis
@@ -316,11 +318,13 @@ def rotm2angle(R):
     z = (R[1][0] - R[0][1])/s
     return [angle,x,y,z]
 
-def get_goal_coordinates(obj_contour, workspace_limits, heightmap_resolution):
+def get_goal_coordinates(obj_contour, mask, workspace_limits, heightmap_resolution):
     obj_contour[:, 0] = (obj_contour[:, 0] - workspace_limits[0][0]) / heightmap_resolution  # drop_x to pixel_dimension2
     obj_contour[:, 1] = (obj_contour[:, 1] - workspace_limits[1][0]) / heightmap_resolution  # drop_y to pixel_dimension1
     obj_contour = np.array(obj_contour).astype(int)
-    return obj_contour
+    cv2.polylines(mask, [obj_contour], 1, (255, 255, 255), 5)
+    cv2.fillPoly(mask, [obj_contour], (255, 255, 255))
+    return mask
 
 
 # get all-one mask
